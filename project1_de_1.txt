@@ -1,0 +1,270 @@
+Скрипт для шага 3:
+/* Создание таблицы tmp_sources с данными из всех источников */
+DROP TABLE IF EXISTS tmp_sources;
+CREATE TEMP TABLE tmp_sources AS 
+SELECT  order_id,
+        order_created_date,
+        order_completion_date,
+        order_status,
+        craftsman_id,
+        craftsman_name,
+        craftsman_address,
+        craftsman_birthday,
+        craftsman_email,
+        product_id,
+        product_name,
+        product_description,
+        product_type,
+        product_price,
+        customer_id,
+        customer_name,
+        customer_address,
+        customer_birthday,
+        customer_email 
+FROM external_source.craft_products_orders
+UNION
+SELECT  t2.order_id,
+        t2.order_created_date,
+        t2.order_completion_date,
+        t2.order_status,
+        t1.craftsman_id,
+        t1.craftsman_name,
+        t1.craftsman_address,
+        t1.craftsman_birthday,
+        t1.craftsman_email,
+        t1.product_id,
+        t1.product_name,
+        t1.product_description,
+        t1.product_type,
+        t1.product_price,
+        t2.customer_id,
+        t2.customer_name,
+        t2.customer_address,
+        t2.customer_birthday,
+        t2.customer_email 
+FROM external_source.craft_products_orders t1
+JOIN external_source.customers t2 ON t2.customer_id = t1.customer_id
+JOIN external_source.craft_products_orders t3 ON t3.product_id = t1.product_id;
+
+/* Добавление внешнего ключа для связи таблицы craft_products_orders с таблицей customers */
+ALTER TABLE external_source.craft_products_orders 
+ADD CONSTRAINT fk_customer_id 
+FOREIGN KEY (customer_id) 
+REFERENCES external_source.customers(customer_id) 
+ON DELETE RESTRICT;
+
+/* Обновление существующих записей и добавление новых в dwh.d_craftsmans */
+MERGE INTO dwh.d_craftsman d
+USING (SELECT DISTINCT craftsman_name, craftsman_address, craftsman_birthday, craftsman_email FROM tmp_sources) t
+ON d.craftsman_name = t.craftsman_name AND d.craftsman_email = t.craftsman_email
+WHEN MATCHED THEN
+    UPDATE SET craftsman_address = t.craftsman_address, 
+        craftsman_birthday = t.craftsman_birthday, 
+        load_dttm = current_timestamp
+WHEN NOT MATCHED THEN
+    INSERT (craftsman_name, craftsman_address, craftsman_birthday, craftsman_email, load_dttm)
+    VALUES (t.craftsman_name, t.craftsman_address, t.craftsman_birthday, t.craftsman_email, current_timestamp);
+
+/* Обновление существующих записей и добавление новых в dwh.d_products */
+MERGE INTO dwh.d_product d
+USING (SELECT DISTINCT product_name, product_description, product_type, product_price FROM tmp_sources) t
+ON d.product_name = t.product_name AND d.product_description = t.product_description AND d.product_price = t.product_price
+WHEN MATCHED THEN
+    UPDATE SET product_type = t.product_type, load_dttm = current_timestamp
+WHEN NOT MATCHED THEN
+    INSERT (product_name, product_description, product_type, product_price, load_dttm)
+    VALUES (t.product_name, t.product_description, t.product_type, t.product_price, current_timestamp);
+
+/* Обновление существующих записей и добавление новых в dwh.d_customer */
+MERGE INTO dwh.d_customer d
+USING (SELECT DISTINCT customer_name, customer_address, customer_birthday, customer_email FROM tmp_sources) t
+ON d.customer_name = t.customer_name AND d.customer_email = t.customer_email
+WHEN MATCHED THEN
+    UPDATE SET customer_address = t.customer_address, 
+        customer_birthday = t.customer_birthday, 
+        load_dttm = current_timestamp
+WHEN NOT MATCHED THEN
+    INSERT (customer_name, customer_address, customer_birthday, customer_email, load_dttm)
+    VALUES (t.customer_name, t.customer_address, t.customer_birthday, t.customer_email, current_timestamp);
+
+
+Скрипт для шага 5:
+-- DDL новой витрины для заказчиков
+CREATE TABLE dwh.customer_report_datamart (
+    id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL, -- идентификатор записи
+    customer_id BIGINT NOT NULL, -- идентификатор заказчика
+    customer_full_name VARCHAR NOT NULL, -- Ф.И.О. заказчика
+    customer_address VARCHAR NOT NULL, -- адрес заказчика
+    customer_birthday DATE NOT NULL, -- дата рождения заказчика
+    customer_email VARCHAR NOT NULL, -- электронная почта заказчика
+    total_spent_by_customer NUMERIC(15, 2) NOT NULL, -- сумма, которую потратил заказчик
+    platform_earnings_from_customer BIGINT NOT NULL, -- сумма, которую заработала платформа от покупок заказчика за месяц (10% от суммы, которую потратил заказчик)
+    orders_count_by_customer BIGINT NOT NULL, -- количество заказов у заказчика за месяц
+    avg_order_cost_by_customer NUMERIC(10, 2) NOT NULL, -- средняя стоимость одного заказа у заказчика за месяц
+    median_order_completion_time NUMERIC(10, 1), -- медианное время в днях от момента создания заказа до его завершения за месяц
+    top_product_category_by_customer VARCHAR NOT NULL, -- самая популярная категория товаров у этого заказчика за месяц
+    popular_craftsman_id_by_customer BIGINT NOT NULL, -- идентификатор самого популярного мастера ручной работы у заказчика
+    orders_created_count_by_customer BIGINT NOT NULL, -- количество созданных заказов за месяц
+    orders_in_progress_count_by_customer BIGINT NOT NULL, -- количество заказов в процессе изготовки за месяц
+    orders_in_delivery_count_by_customer BIGINT NOT NULL, -- количество заказов в доставке за месяц
+    orders_done_count_by_customer BIGINT NOT NULL, -- количество завершённых заказов за месяц
+    orders_not_done_count_by_customer BIGINT NOT NULL, -- количество незавершённых заказов за месяц
+    report_period VARCHAR NOT NULL, -- отчётный период год и месяц
+    CONSTRAINT customer_report_datamart_pk PRIMARY KEY (id)
+);
+
+-- DDL таблицы инкрементальных загрузок для новой витрины
+CREATE TABLE dwh.load_dates_customer_report_datamart (
+    id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+    load_dttm DATE NOT NULL,
+    CONSTRAINT load_dates_customer_report_datamart_pk PRIMARY KEY (id)
+);
+
+
+
+Шаг 6:
+WITH
+customer_delta AS (
+    SELECT     
+        dc.customer_id AS customer_id,
+        dc.customer_full_name AS customer_full_name,
+        dc.customer_address AS customer_address,
+        dc.customer_birthday AS customer_birthday,
+        dc.customer_email AS customer_email,
+        -- Добавьте остальные необходимые поля о заказчиках
+        total_spent_by_customer,
+        platform_earnings_from_customer,
+        orders_count_by_customer,
+        avg_order_cost_by_customer,
+        median_order_completion_time,
+        top_product_category_by_customer,
+        orders_created_count_by_customer,
+        orders_in_progress_count_by_customer,
+        orders_in_delivery_count_by_customer,
+        orders_done_count_by_customer,
+        orders_not_done_count_by_customer,
+        report_period
+    FROM dwh.d_customer dc
+),
+customer_update_delta AS (
+    SELECT     
+        dd.customer_id AS customer_id
+    FROM customer_delta dd 
+    WHERE dd.customer_id IS NOT NULL   
+),
+customer_delta_insert_result AS (
+    SELECT  
+        customer_id,
+        customer_full_name,
+        customer_address,
+        customer_birthday,
+        customer_email,
+        total_spent_by_customer,
+        platform_earnings_from_customer,
+        orders_count_by_customer,
+        avg_order_cost_by_customer,
+        median_order_completion_time,
+        top_product_category_by_customer,
+        orders_created_count_by_customer,
+        orders_in_progress_count_by_customer,
+        orders_in_delivery_count_by_customer,
+        orders_done_count_by_customer,
+        orders_not_done_count_by_customer,
+        report_period,
+        FIRST_VALUE(popular_craftsman_id_by_customer) OVER (PARTITION BY customer_id ORDER BY orders_count_by_customer DESC) AS popular_craftsman_id_by_customer
+    FROM customer_delta 
+    WHERE customer_id IN (SELECT customer_id FROM customer_update_delta)
+),
+customer_delta_update_result AS (
+    SELECT 
+        customer_id,
+        customer_full_name,
+        customer_address,
+        customer_birthday,
+        customer_email,
+        total_spent_by_customer,
+        platform_earnings_from_customer,
+        orders_count_by_customer,
+        avg_order_cost_by_customer,
+        median_order_completion_time,
+        top_product_category_by_customer,
+        orders_created_count_by_customer,
+        orders_in_progress_count_by_customer,
+        orders_in_delivery_count_by_customer,
+        orders_done_count_by_customer,
+        orders_not_done_count_by_customer,
+        report_period,
+        FIRST_VALUE(popular_craftsman_id_by_customer) OVER (PARTITION BY customer_id ORDER BY orders_count_by_customer DESC) AS popular_craftsman_id_by_customer
+    FROM customer_delta 
+    WHERE customer_id NOT IN (SELECT customer_id FROM customer_update_delta)
+),
+insert_delta AS (
+    INSERT INTO dwh.customer_report_datamart (
+        customer_id,
+        customer_full_name,
+        customer_address,
+        customer_birthday, 
+        customer_email, 
+        total_spent_by_customer,
+        platform_earnings_from_customer,
+        orders_count_by_customer,
+        avg_order_cost_by_customer,
+        median_order_completion_time,
+        top_product_category_by_customer,
+        popular_craftsman_id_by_customer,
+        orders_created_count_by_customer,
+        orders_in_progress_count_by_customer,
+        orders_in_delivery_count_by_customer,
+        orders_done_count_by_customer,
+        orders_not_done_count_by_customer,
+        report_period
+    ) SELECT 
+        customer_id,
+        customer_full_name,
+        customer_address,
+        customer_birthday,
+        customer_email,
+        total_spent_by_customer,
+	platform_earnings_from_customer,
+        orders_count_by_customer,
+        avg_order_cost_by_customer,
+        median_order_completion_time,
+        top_product_category_by_customer,
+        popular_craftsman_id_by_customer,
+        orders_created_count_by_customer,
+        orders_in_progress_count_by_customer,
+        orders_in_delivery_count_by_customer,
+        orders_done_count_by_customer,
+        orders_not_done_count_by_customer,
+        report_period
+    FROM customer_delta_insert_result
+),
+update_delta AS (
+    UPDATE dwh.customer_report_datamart SET
+        customer_full_name = updates.customer_full_name, 
+        customer_address = updates.customer_address, 
+        total_spent_by_customer = updates.total_spent_by_customer,
+        platform_earnings_from_customer = updates.platform_earnings_from_customer,
+        orders_count_by_customer = updates.orders_count_by_customer,
+        avg_order_cost_by_customer = updates.avg_order_cost_by_customer,
+        median_order_completion_time = updates.median_order_completion_time,
+        top_product_category_by_customer = updates.top_product_category_by_customer,
+        popular_craftsman_id_by_customer = updates.popular_craftsman_id_by_customer,
+        orders_created_count_by_customer = updates.orders_created_count_by_customer,
+        orders_in_progress_count_by_customer = updates.orders_in_progress_count_by_customer,
+        orders_in_delivery_count_by_customer = updates.orders_in_delivery_count_by_customer,
+        orders_done_count_by_customer = updates.orders_done_count_by_customer,
+        orders_not_done_count_by_customer = updates.orders_not_done_count_by_customer,
+        report_period = updates.report_period
+    FROM customer_delta_update_result updates
+    WHERE dwh.customer_report_datamart.customer_id = updates.customer_id
+),
+insert_load_date AS (
+    INSERT INTO dwh.load_dates_customer_report_datamart (
+        load_dttm
+    )
+    SELECT GREATEST(
+        COALESCE(MAX(load_dttm), NOW())
+    FROM customer_delta
+)
+SELECT 'increment datamart';
